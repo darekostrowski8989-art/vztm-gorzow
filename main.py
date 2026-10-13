@@ -1,4 +1,4 @@
-
+﻿
 import os
 import sqlite3
 from datetime import datetime
@@ -652,6 +652,7 @@ def dashboard():
 </div></div>
 
 <div class="content"><div class="wrap">
+<div class="box" style="margin-bottom:18px"><h2>Rekrutacja</h2><p>Sprawdzaj zgłoszenia oraz wyniki kandydatów.</p><a class="btn" href="/panel/wyniki-rekrutacji">Wyniki rekrutacji</a></div>
 <div class="stats">
 <div class="stat"><div class="stat-label">Pojazdy w bazie</div><div class="stat-number">{{ vehicles }}</div><span class="muted">Cały tabor</span></div>
 <div class="stat"><div class="stat-label">Pojazdy gotowe</div><div class="stat-number">{{ ready }}</div><span class="muted">Status: Gotowy</span></div>
@@ -1076,6 +1077,39 @@ def szczegoly_rekrutacji(application_id):
     tresc += "<a class='btn' href='/panel/rekrutacja'>Wróć do zgłoszeń</a>"
     return _rekrutacja_strona("Szczegóły zgłoszenia", tresc)
 
+
+@app.route("/panel/wyniki-rekrutacji")
+@login_required
+def wyniki_rekrutacji():
+    db = _rekrutacja_polacz()
+    aplikacje = db.execute(
+        "SELECT id,name,discord,status,created_at FROM applications ORDER BY id DESC"
+    ).fetchall()
+    db.close()
+
+    esc = lambda value: str(value or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    wiersze = ""
+    for a in aplikacje:
+        status = esc(a["status"])
+        wiersze += (
+            "<tr><td>" + str(a["id"]) + "</td>"
+            "<td><b>" + esc(a["name"]) + "</b></td>"
+            "<td>" + esc(a["discord"]) + "</td>"
+            "<td><span class='tag'>" + status + "</span></td>"
+            "<td>" + esc(a["created_at"]) + "</td>"
+            "<td><a class='btn' href='/panel/rekrutacja/" + str(a["id"]) + "'>Zobacz wynik</a></td></tr>"
+        )
+
+    tresc = (
+        "<div class='box'><h2>Wyniki rekrutacji</h2>"
+        "<p>Lista zgłoszeń i aktualnych wyników kandydatów.</p>"
+        "<div style='overflow-x:auto'><table style='width:100%;text-align:left;border-collapse:collapse'>"
+        "<tr><th>ID</th><th>Kandydat</th><th>Discord</th><th>Wynik</th><th>Data</th><th>Szczegóły</th></tr>"
+        + (wiersze or "<tr><td colspan='6'>Brak zgłoszeń rekrutacyjnych.</td></tr>")
+        + "</table></div></div><a class='btn' href='/panel'>Wróć do panelu</a>"
+    )
+    return _rekrutacja_strona("Wyniki rekrutacji", tresc)
+
 # ===== KONIEC REKRUTACJI =====
 
 if __name__ == "__main__":
@@ -1086,3 +1120,5 @@ if __name__ == "__main__":
         port=int(os.environ.get("PORT", "5000")),
         debug=False
     )
+
+
