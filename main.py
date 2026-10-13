@@ -9,6 +9,7 @@ from flask import (
     session, flash, render_template_string
 )
 from werkzeug.security import check_password_hash, generate_password_hash
+import osoby_whitelist
 
 app = Flask(__name__)
 app.secret_key = os.environ.get(
@@ -576,6 +577,17 @@ def login():
             session.clear()
             session["logged_in"] = True
             session["username"] = username
+            session["is_admin"] = True
+            flash("Zalogowano pomyślnie.", "success")
+            return redirect(url_for("dashboard"))
+
+        if osoby_whitelist.uwierzytelnij(username, password):
+            session.clear()
+            session["logged_in"] = True
+            session["username"] = username
+            czy_dyrektor = username.casefold() == "dyrektor vztm"
+            session["is_admin"] = czy_dyrektor
+            session["role"] = "dyrektor" if czy_dyrektor else "kierowca"
             flash("Zalogowano pomyślnie.", "success")
             return redirect(url_for("dashboard"))
 
@@ -653,6 +665,9 @@ def dashboard():
 
 <div class="content"><div class="wrap">
 <div class="box" style="margin-bottom:18px"><h2>Rekrutacja</h2><p>Sprawdzaj zgłoszenia oraz wyniki kandydatów.</p><a class="btn" href="/panel/wyniki-rekrutacji">Wyniki rekrutacji</a></div>
+{% if session.get('is_admin') %}
+<div class="box" style="margin-bottom:18px"><h2>Konta pracowników</h2><p>Twórz konta, blokuj dostęp i usuwaj konta pracowników.</p><a class="btn" href="/panel/whitelist">Zarządzaj whitelistą</a></div>
+{% endif %}
 <div class="stats">
 <div class="stat"><div class="stat-label">Pojazdy w bazie</div><div class="stat-number">{{ vehicles }}</div><span class="muted">Cały tabor</span></div>
 <div class="stat"><div class="stat-label">Pojazdy gotowe</div><div class="stat-number">{{ ready }}</div><span class="muted">Status: Gotowy</span></div>
@@ -692,6 +707,120 @@ def dashboard():
         news_count=news_count, recent=recent
     )
 
+
+
+# ============================================================
+# WHITELISTA PRACOWNIKOW — TYLKO ADMINISTRATOR
+# ============================================================
+
+@app.route("/panel/whitelist", methods=["GET", "POST"])
+@login_required
+def zarzadzaj_whitelist():
+    if session.get("username") != ADMIN_USER or not session.get("is_admin"):
+        flash("Tylko administrator może zarządzać kontami.", "error")
+        return redirect(url_for("dashboard"))
+
+    import secrets
+    token = session.get("whitelist_csrf")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["whitelist_csrf"] = token
+
+    if request.method == "POST":
+        if not secrets.compare_digest(
+            request.form.get("csrf_token", ""), token
+        ):
+            flash("Nieprawidłowy token formularza. Odśwież stronę.", "error")
+            return redirect(url_for("zarzadzaj_whitelist"))
+
+        akcja = request.form.get("akcja", "")
+        login_pracownika = request.form.get("login", "").strip()
+
+        try:
+            if akcja == "utworz":
+                osoby_whitelist.utworz_konto(
+                    request.form.get("nowy_login", ""),
+                    request.form.get("nowe_haslo", "")
+                )
+                flash("Utworzono konto pracownika.", "success")
+            elif akcja == "blokuj":
+                if not osoby_whitelist.ustaw_aktywne(login_pracownika, False):
+                    flash("Nie znaleziono konta.", "error")
+                else:
+                    flash("Konto zostało zablokowane.", "success")
+            elif akcja == "odblokuj":
+                if not osoby_whitelist.ustaw_aktywne(login_pracownika, True):
+                    flash("Nie znaleziono konta.", "error")
+                else:
+                    flash("Konto zostało odblokowane.", "success")
+            elif akcja == "usun":
+                if not osoby_whitelist.usun_konto(login_pracownika):
+                    flash("Nie znaleziono konta.", "error")
+                else:
+                    flash("Konto zostało usunięte.", "success")
+            else:
+                flash("Nieznana operacja.", "error")
+        except ValueError as e:
+            flash(str(e), "error")
+        except sqlite3.IntegrityError:
+            flash("Taki login już istnieje.", "error")
+
+        return redirect(url_for("zarzadzaj_whitelist"))
+
+    konta = osoby_whitelist.lista_kont()
+    body = r"""
+<div class="page-head"><div class="wrap">
+<div class="crumb">Panel / Bezpieczeństwo</div>
+<h1>Whitelist — konta pracowników</h1>
+<p>Twórz i kontroluj dostęp do panelu VZTM.</p>
+</div></div>
+<div class="content"><div class="wrap">
+<section class="panel" style="margin-bottom:20px">
+<div class="panel-head"><h2>Utwórz konto</h2></div>
+<div class="panel-body">
+<form method="post">
+<input type="hidden" name="csrf_token" value="{{ token }}">
+<input type="hidden" name="akcja" value="utworz">
+<label>Login pracownika</label>
+<input name="nowy_login" minlength="3" maxlength="40" required autocomplete="off">
+<label>Hasło (minimum 12 znaków)</label>
+<input type="password" name="nowe_haslo" minlength="12" required autocomplete="new-password">
+<button class="btn" type="submit">Utwórz konto</button>
+</form>
+</div></section>
+<section class="panel">
+<div class="panel-head"><h2>Lista kont</h2><span class="pill">{{ konta|length }} kont</span></div>
+{% if konta %}
+<div class="table-wrap"><table><thead><tr>
+<th>Login</th><th>Status</th><th>Utworzono</th><th>Operacje</th>
+</tr></thead><tbody>
+{% for konto in konta %}
+<tr>
+<td><b>{{ konto['login'] }}</b></td>
+<td>{% if konto['aktywne'] %}<span class="pill">Aktywne</span>{% else %}<span class="pill red">Zablokowane</span>{% endif %}</td>
+<td>{{ konto['utworzono'] }}</td>
+<td>
+<form method="post" style="display:inline">
+<input type="hidden" name="csrf_token" value="{{ token }}">
+<input type="hidden" name="login" value="{{ konto['login'] }}">
+{% if konto['aktywne'] %}
+<button class="btn" name="akcja" value="blokuj" type="submit">Zablokuj</button>
+{% else %}
+<button class="btn" name="akcja" value="odblokuj" type="submit">Odblokuj</button>
+{% endif %}
+<button class="btn" name="akcja" value="usun" type="submit" onclick="return confirm('Usunąć konto {{ konto['login'] }}?')">Usuń</button>
+</form>
+</td></tr>
+{% endfor %}
+</tbody></table></div>
+{% else %}
+<div class="empty">Nie utworzono jeszcze żadnych kont pracowników.</div>
+{% endif %}
+</section>
+<p style="margin-top:20px"><a class="btn" href="{{ url_for('dashboard') }}">← Wróć do panelu</a></p>
+</div></div>
+"""
+    return page("Whitelist pracowników", body, konta=konta, token=token)
 
 # ============================================================
 # TABOR
@@ -1120,5 +1249,7 @@ if __name__ == "__main__":
         port=int(os.environ.get("PORT", "5000")),
         debug=False
     )
+
+
 
 
